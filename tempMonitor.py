@@ -7,11 +7,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, date
 import argparse
 import sys
+import queue
+import threading
 
 # Raw string avoids needing to escape backslashes
 LOGFILE = r"C:\Program Files (x86)\Steam\steamapps\common\Bigscreen Beyond Driver\bin\log.txt"
 
-EXIT=False
+NEWLINES = queue.Queue()
 
 # This function courtesy of Google AI
 def follow(targetFile):
@@ -25,17 +27,22 @@ def follow(targetFile):
         if not line:
             time.sleep(1)
             continue
-        yield line
+
+        NEWLINES.put(line)
+        #yield line
 
 # Parse datetime string which may be either full date+time or just time
 # If just time, assume today's date
 def parseDT(dtString):
+    dtFormmat = "%Y-%m-%d %H:%M:%S"
+    tFormat = "%H:%M:%S"
+
     try:
-        return datetime.strptime(dtString, r"%Y-%m-%d %H:%M:%S")
+        return datetime.strptime(dtString, dtFormmat)
     except ValueError:
         pass
 
-    time = datetime.strptime(dtString, r"%H:%M:%S")
+    time = datetime.strptime(dtString, tFormat)
     today = date.today()
 
     final_datetime = datetime(
@@ -49,14 +56,10 @@ def parseDT(dtString):
     return final_datetime
 
 def on_close(event):
-    global EXIT
-    EXIT = True
     print("Window Closed. Exiting...")
     sys.exit(0)
 
 def main(args):
-    dtFormmat = r"%Y-%m-%d %H:%M:%S"
-
     dataSeconds = 0
     if args.lastHours:
         dataSeconds += args.lastHours * 3600
@@ -83,7 +86,9 @@ def main(args):
     print("Opening and parsing log file")
     with open(LOGFILE, "r") as lf:
         ti = []
-        temps = []
+        mbt = []
+        dlt = []
+        drt = []
 
         # First load all the existing data points
         for line in lf:
@@ -93,19 +98,43 @@ def main(args):
                 timeDT = parseDT(time)
                 ti.append(timeDT)
 
-                temp = line.split(",")[2]
-                temps.append(float(temp))
+                mbTemp = line.split(",")[2]
+                mbt.append(float(mbTemp))
 
-        #plt.plot(ti, temps)
-        #plt.scatter(ti, temps)
+                dlTemp = float(line.split(",")[3])
+                drTemp = float(line.split(",")[4])
+
+                if dlTemp < 0:
+                    dlt.append(0)
+                else:
+                    dlt.append(dlTemp)
+
+                if drTemp < 0:
+                    drt.append(0)
+                else:
+                    drt.append(drTemp)
+
+        #plt.plot(ti, mbt)
+        #plt.scatter(ti, mbt)
         plt.xlabel("Time")
         plt.ylabel("Temperature (C)")
         plt.title("BSB Temperature over Time")
-        animated_plot = plt.plot(ti, temps, 'bo')[0]
+        #animated_plot = plt.plot(ti, mbt, 'bo')[0]
 
-        print("File parsed, preparing plot for display...")
+        animated_plot = plt.plot(ti, mbt, 'o', label="MainboardTemp")[0]
+        plot2 = plt.plot(ti, dlt, 's', label="DisplayLeftTemp")[0]
+        plot3 = plt.plot(ti, drt, 'v', label="DisplayRightTemp")[0]
+
+        #animated_plot = plt.scatter(ti, mbt, label="MainboardTemp")
+        #plot2 = plt.scatter(ti, dlt, label="DisplayLeftTemp")
+        #plot3 = plt.scatter(ti, drt, label="DisplayRightTemp")
+        
+        plt.legend(loc='best')
+
         fig = plt.figure(1)
         fig.canvas.mpl_connect('close_event', on_close)
+
+        print("File parsed, preparing plot for display...")
 
         if args.endTime:
             endTimeDT = parseDT(args.endTime)
@@ -124,21 +153,50 @@ def main(args):
             ll = parseDT(args.startTime) - timedelta(seconds=100)
             plt.xlim(left = ll)
         #    print(f"Left limit: {ll}")
-        #plt.draw()
 
-        # Plot new data points as they are written to the log file
-        for line in follow(lf):
+        plt.draw()
+
+        # Start thread that watches file and adds new lines to queue
+        watcher = threading.Thread(target=follow, args=(lf,))
+        watcher.start()
+
+        # Plot new data points as they are copied from the log file to the queue
+        while True:
+            try:
+                line = NEWLINES.get(block=False)
+            except queue.Empty:
+                #print("No new lines yet...")
+                plt.draw()
+                plt.pause(1)
+                continue
+
+            # Only parse lines starting with YYYY-MM-DD string
             if re.match(r'^\d{4}-\d{2}-\d{2}', line):
                 time = line.split(",")[0]
                 thisTime = parseDT(time)
                 ti.append(thisTime)
 
                 temp = line.split(",")[2]
-                temps.append(float(temp))
+                mbt.append(float(temp))
+
+                dlTemp = float(line.split(",")[3])
+                drTemp = float(line.split(",")[4])
+
+                if dlTemp < 0:
+                    dlt.append(0)
+                else:
+                    dlt.append(dlTemp)
+
+                if drTemp < 0:
+                    drt.append(0)
+                else:
+                    drt.append(drTemp)
             
             recentTimestamp = ti[-1]
             plotTi = ti
-            plotTemps = temps
+            plotMbt = mbt
+            plotDlt = dlt
+            plotDrt = drt
 
             if dataSeconds > 0:
                 for t in ti:
@@ -146,7 +204,10 @@ def main(args):
                         cutIndex = ti.index(t)
                         break
                 plotTi = ti[cutIndex:]
-                plotTemps = temps[cutIndex:]
+                plotMbt = mbt[cutIndex:]
+                plotDlt = dlt[cutIndex:]
+                plotDrt = drt[cutIndex:]
+
             
             elif args.startTime:
                 startTimeDT = parseDT(args.startTime)
@@ -156,10 +217,16 @@ def main(args):
                         cutIndex = plotTi.index(t)
                         break
                 plotTi = plotTi[cutIndex:]
-                plotTemps = plotTemps[cutIndex:]
+                plotMbt = plotMbt[cutIndex:]
+                plotDlt = plotDlt[cutIndex:]
+                plotDrt = plotDrt[cutIndex:]
 
             animated_plot.set_xdata(plotTi)
-            animated_plot.set_ydata(plotTemps)
+            animated_plot.set_ydata(plotMbt)
+            plot2.set_xdata(plotTi)
+            plot2.set_ydata(plotDlt)
+            plot3.set_xdata(plotTi)
+            plot3.set_ydata(plotDrt)
 
             # Only update the x-axis limits for sliding windows since doing so partially breaks pan-zoom functionality
             if dataSeconds > 0:
@@ -173,7 +240,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Monitor BSB headset temperature from log file.")
-    parser.add_argument("--logfile", type=str, default=LOGFILE, help="Path to the log file.")
+    parser.add_argument("--logfile", "-f", type=str, default=LOGFILE, help=f"Path to the log file. Default is '{LOGFILE}'")
     parser.add_argument("--lastHours", "-H", type=int, help="Show this many previous hours of data. Will be added to other --lastX arguments")
     parser.add_argument("--lastMinutes", "-M", type=int, help="Show this many previous minutes of data. Will be added to other --lastX arguments")
     parser.add_argument("--lastSeconds", "-S", type=int, help="Show this many previous seconds of data. Will be added to other --lastX arguments")
