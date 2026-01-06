@@ -119,7 +119,7 @@ def main(args):
         plt.xlabel("Time")
         plt.ylabel("Temperature (C)")
         plt.title("BSB Temperature over Time")
-        #animated_plot = plt.plot(ti, mbt, 'bo')[0]
+        plt.grid()
 
         animated_plot = plt.plot(ti, mbt, 'o', label="MainboardTemp")[0]
         plot2 = plt.plot(ti, dlt, 's', label="DisplayLeftTemp")[0]
